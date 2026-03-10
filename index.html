@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FruitScan — Adulteration Detector</title>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <style>
+    /* ── reset & tokens ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0a0d0f;
+      --surface:   #111418;
+      --border:    #1e2530;
+      --border-hi: #2a3545;
+      --fresh:     #22c55e;
+      --fresh-dim: #14532d;
+      --rotten:    #ef4444;
+      --rotten-dim:#7f1d1d;
+      --adult:     #f59e0b;
+      --adult-dim: #78350f;
+      --text:      #e8ecf0;
+      --muted:     #6b7a8d;
+      --accent:    #38bdf8;
+      --accent2:   #818cf8;
+      --radius:    14px;
+      --glow-fresh: 0 0 24px #22c55e55;
+      --glow-rot:   0 0 24px #ef444455;
+      --glow-adult: 0 0 24px #f59e0b55;
+    }
+
+    html { font-size: 16px; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Space Mono', monospace;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── noise grain overlay ── */
+    body::before {
+      content:''; position:fixed; inset:0; pointer-events:none; z-index:999;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+      opacity: 0.35;
+    }
+
+    /* ── grid bg ── */
+    body::after {
+      content:''; position:fixed; inset:0; pointer-events:none; z-index:0;
+      background-image:
+        linear-gradient(var(--border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 48px 48px;
+      opacity: 0.3;
+    }
+
+    /* ── layout ── */
+    .wrap {
+      position: relative; z-index: 1;
+      max-width: 1100px; margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+
+    /* ── header ── */
+    header {
+      display: flex; align-items: flex-end; gap: 18px;
+      margin-bottom: 56px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 28px;
+    }
+    .logo-mark {
+      width: 52px; height: 52px;
+      background: linear-gradient(135deg, var(--fresh) 0%, var(--accent) 100%);
+      border-radius: 14px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 26px;
+      box-shadow: var(--glow-fresh);
+      flex-shrink: 0;
+    }
+    h1 {
+      font-family: 'Syne', sans-serif;
+      font-size: clamp(1.6rem, 4vw, 2.6rem);
+      font-weight: 800;
+      letter-spacing: -1px;
+      line-height: 1;
+    }
+    h1 span { color: var(--fresh); }
+    .tagline {
+      font-size: 0.75rem;
+      color: var(--muted);
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      margin-top: 5px;
+    }
+    .header-right {
+      margin-left: auto;
+      display: flex; align-items: center; gap: 8px;
+      font-size: 0.7rem; color: var(--muted);
+    }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--rotten);
+      transition: background 0.4s;
+    }
+    .status-dot.ready { background: var(--fresh); animation: pulse 2s infinite; }
+    @keyframes pulse {
+      0%,100% { box-shadow: 0 0 0 0 #22c55e55; }
+      50% { box-shadow: 0 0 0 6px #22c55e00; }
+    }
+
+    /* ── api config bar ── */
+    .api-bar {
+      display: flex; gap: 10px; align-items: center;
+      margin-bottom: 32px;
+    }
+    .api-bar input {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: 'Space Mono', monospace;
+      font-size: 0.78rem;
+      padding: 10px 14px;
+      border-radius: 8px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .api-bar input:focus { border-color: var(--accent); }
+    .api-bar input::placeholder { color: var(--muted); }
+    .btn-sm {
+      background: var(--border-hi);
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-family: 'Space Mono', monospace;
+      font-size: 0.72rem;
+      padding: 10px 16px;
+      border-radius: 8px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+    .btn-sm:hover { background: var(--accent); color: #000; border-color: var(--accent); }
+
+    /* ── main grid ── */
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    @media(max-width:760px) {
+      .main-grid { grid-template-columns: 1fr; }
+    }
+
+    /* ── panels ── */
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+    .panel-header {
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .panel-title {
+      font-family: 'Syne', sans-serif;
+      font-weight: 700;
+      font-size: 0.85rem;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .panel-body { padding: 20px; }
+
+    /* ── drop zone ── */
+    .drop-zone {
+      border: 2px dashed var(--border-hi);
+      border-radius: 10px;
+      padding: 48px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.25s;
+      position: relative;
+      overflow: hidden;
+    }
+    .drop-zone::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: radial-gradient(ellipse at 50% 0%, #22c55e0a 0%, transparent 70%);
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--fresh);
+      box-shadow: var(--glow-fresh);
+    }
+    .drop-zone:hover::before, .drop-zone.dragover::before { opacity: 1; }
+
+    .drop-icon { font-size: 3rem; margin-bottom: 12px; display: block; }
+    .drop-label {
+      font-family: 'Syne', sans-serif;
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 6px;
+    }
+    .drop-sub { font-size: 0.72rem; color: var(--muted); }
+
+    /* hidden file input */
+    #fileInput { display: none; }
+
+    /* ── preview image ── */
+    .img-preview {
+      width: 100%;
+      border-radius: 8px;
+      display: none;
+      margin-top: 16px;
+    }
+    .img-preview.show { display: block; }
+
+    /* ── analyze button ── */
+    .btn-analyze {
+      width: 100%;
+      margin-top: 16px;
+      padding: 14px;
+      background: linear-gradient(135deg, var(--fresh) 0%, var(--accent) 100%);
+      border: none;
+      border-radius: 10px;
+      color: #000;
+      font-family: 'Syne', sans-serif;
+      font-weight: 800;
+      font-size: 0.95rem;
+      letter-spacing: 1px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: none;
+      position: relative;
+      overflow: hidden;
+    }
+    .btn-analyze.show { display: block; }
+    .btn-analyze:hover { transform: translateY(-2px); box-shadow: var(--glow-fresh); }
+    .btn-analyze:active { transform: translateY(0); }
+    .btn-analyze:disabled {
+      background: var(--border);
+      color: var(--muted);
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    /* ── spinner ── */
+    .spinner {
+      display: inline-block;
+      width: 16px; height: 16px;
+      border: 2px solid #00000044;
+      border-top-color: #000;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── result image ── */
+    .result-img-wrap {
+      width: 100%;
+      aspect-ratio: 4/3;
+      background: #0a0d0f;
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+      position: relative;
+    }
+    .result-img-wrap img {
+      width: 100%; height: 100%;
+      object-fit: contain;
+    }
+    .result-placeholder {
+      display: flex; flex-direction: column;
+      align-items: center; gap: 10px;
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+    .result-placeholder .icon { font-size: 2.5rem; opacity: 0.4; }
+
+    /* ── summary pills ── */
+    .summary-row {
+      display: flex; gap: 10px; flex-wrap: wrap;
+      margin-top: 16px;
+    }
+    .pill {
+      padding: 8px 16px;
+      border-radius: 100px;
+      font-family: 'Syne', sans-serif;
+      font-weight: 700;
+      font-size: 0.8rem;
+      letter-spacing: 0.5px;
+      border: 1px solid;
+      transition: all 0.3s;
+    }
+    .pill.fresh   { color: var(--fresh);  border-color: var(--fresh-dim);  background: var(--fresh-dim);  }
+    .pill.rotten  { color: var(--rotten); border-color: var(--rotten-dim); background: var(--rotten-dim); }
+    .pill.adult   { color: var(--adult);  border-color: var(--adult-dim);  background: var(--adult-dim);  }
+    .pill.mode    { color: var(--accent); border-color: #0c4a6e; background: #082030; }
+
+    /* ── detection cards ── */
+    .det-list { margin-top: 20px; display: flex; flex-direction: column; gap: 12px; }
+    .det-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.2s;
+    }
+    .det-card::before {
+      content: '';
+      position: absolute; left: 0; top: 0; bottom: 0;
+      width: 3px;
+    }
+    .det-card.fresh::before  { background: var(--fresh);  }
+    .det-card.rotten::before { background: var(--rotten); }
+    .det-card.adulterated::before { background: var(--adult); }
+
+    .det-card-top {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 8px;
+    }
+    .det-card-label {
+      font-family: 'Syne', sans-serif;
+      font-weight: 800;
+      font-size: 0.95rem;
+    }
+    .det-card-label.fresh   { color: var(--fresh); }
+    .det-card-label.rotten  { color: var(--rotten); }
+    .det-card-label.adulterated { color: var(--adult); }
+    .det-yolo-tag {
+      font-size: 0.65rem;
+      color: var(--muted);
+      background: var(--border);
+      padding: 3px 8px;
+      border-radius: 4px;
+    }
+
+    /* confidence bar */
+    .conf-bar-wrap { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .conf-bar-bg {
+      flex: 1; height: 6px;
+      background: var(--border);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .conf-bar-fill {
+      height: 100%; border-radius: 3px;
+      transition: width 0.6s cubic-bezier(.4,0,.2,1);
+    }
+    .conf-val {
+      font-size: 0.7rem;
+      color: var(--text);
+      white-space: nowrap;
+      font-weight: 700;
+    }
+
+    /* prob breakdown */
+    .prob-row {
+      display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;
+    }
+    .prob-chip {
+      font-size: 0.63rem;
+      padding: 2px 8px;
+      border-radius: 4px;
+      background: var(--border);
+      color: var(--muted);
+    }
+    .prob-chip.winner { background: var(--border-hi); color: var(--text); }
+
+    /* ── error banner ── */
+    .error-banner {
+      display: none;
+      background: #2d0f0f;
+      border: 1px solid var(--rotten-dim);
+      border-radius: 10px;
+      padding: 12px 16px;
+      color: var(--rotten);
+      font-size: 0.78rem;
+      margin-top: 12px;
+      line-height: 1.6;
+    }
+    .error-banner.show { display: block; }
+
+    /* ── empty state ── */
+    .empty-state {
+      text-align: center; color: var(--muted);
+      font-size: 0.78rem; padding: 24px 0;
+    }
+
+    /* ── footer ── */
+    footer {
+      position: relative; z-index: 1;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.68rem;
+      padding: 28px;
+      border-top: 1px solid var(--border);
+      letter-spacing: 1px;
+    }
+
+    /* ── scan animation overlay on result image ── */
+    .scan-line {
+      position: absolute; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--fresh), transparent);
+      animation: scandown 1.8s linear infinite;
+      display: none;
+    }
+    .scanning .scan-line { display: block; }
+    @keyframes scandown {
+      from { top: 0; }
+      to   { top: 100%; }
+    }
+
+    /* ── responsive tweaks ── */
+    @media(max-width:480px) {
+      header { flex-wrap: wrap; }
+      .header-right { display: none; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ── Header ── -->
+  <header>
+    <div class="logo-mark">🍎</div>
+    <div>
+      <h1>Fruit<span>Scan</span></h1>
+      <p class="tagline">Adulteration Detection System</p>
+    </div>
+    <div class="header-right">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">OFFLINE</span>
+    </div>
+  </header>
+
+  <!-- ── API URL config ── -->
+  <div class="api-bar">
+    <input
+      type="text"
+      id="apiUrl"
+      placeholder="Backend API URL — e.g. https://your-api.onrender.com"
+      value=""
+    />
+    <button class="btn-sm" onclick="pingApi()">PING</button>
+  </div>
+
+  <!-- ── Main grid ── -->
+  <div class="main-grid">
+
+    <!-- LEFT: upload -->
+    <div>
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Upload Image</span>
+          <span style="font-size:0.65rem;color:var(--muted)">JPG / PNG / JPEG</span>
+        </div>
+        <div class="panel-body">
+          <div
+            class="drop-zone"
+            id="dropZone"
+            onclick="document.getElementById('fileInput').click()"
+            ondragover="handleDragOver(event)"
+            ondragleave="handleDragLeave(event)"
+            ondrop="handleDrop(event)"
+          >
+            <span class="drop-icon">📷</span>
+            <p class="drop-label">Drop image here</p>
+            <p class="drop-sub">or click to browse</p>
+          </div>
+          <input type="file" id="fileInput" accept="image/*" onchange="handleFileSelect(event)" />
+          <img class="img-preview" id="imgPreview" alt="preview" />
+          <button class="btn-analyze" id="analyzeBtn" onclick="analyze()">
+            ANALYZE FRUIT
+          </button>
+          <div class="error-banner" id="errorBanner"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT: result image -->
+    <div>
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Detection Output</span>
+          <span style="font-size:0.65rem;color:var(--muted)" id="modeTag">—</span>
+        </div>
+        <div class="panel-body">
+          <div class="result-img-wrap" id="resultImgWrap">
+            <div class="result-placeholder" id="resultPlaceholder">
+              <span class="icon">🔬</span>
+              <span>Annotated output appears here</span>
+            </div>
+            <img id="resultImg" alt="result" style="display:none" />
+            <div class="scan-line" id="scanLine"></div>
+          </div>
+          <div class="summary-row" id="summaryRow"></div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /main-grid -->
+
+  <!-- ── Detection cards ── -->
+  <div id="detectionSection" style="margin-top:20px; display:none;">
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Per-Object Results</span>
+        <span id="detCount" style="font-size:0.65rem;color:var(--muted)"></span>
+      </div>
+      <div class="panel-body">
+        <div class="det-list" id="detList"></div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /wrap -->
+
+<footer>FRUITSCAN v1.0 — YOLO + KERAS ADULTERATION CLASSIFIER — LOCAL INFERENCE VIA RENDER API</footer>
+
+<script>
+// ── state ──
+let selectedFile = null;
+
+// ── drag & drop ──
+function handleDragOver(e) {
+  e.preventDefault();
+  document.getElementById('dropZone').classList.add('dragover');
+}
+function handleDragLeave(e) {
+  document.getElementById('dropZone').classList.remove('dragover');
+}
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById('dropZone').classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith('image/')) loadFile(file);
+}
+function handleFileSelect(e) {
+  const file = e.target.files[0];
+  if (file) loadFile(file);
+}
+
+function loadFile(file) {
+  selectedFile = file;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const preview = document.getElementById('imgPreview');
+    preview.src = e.target.result;
+    preview.classList.add('show');
+    document.getElementById('analyzeBtn').classList.add('show');
+    clearResults();
+  };
+  reader.readAsDataURL(file);
+}
+
+// ── api ping ──
+async function pingApi() {
+  const url = getApiUrl();
+  if (!url) { showError('Enter your backend API URL first.'); return; }
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+  dot.className = 'status-dot';
+  txt.textContent = 'CHECKING…';
+  try {
+    const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(8000) });
+    if (res.ok) {
+      dot.classList.add('ready');
+      txt.textContent = 'ONLINE';
+    } else {
+      txt.textContent = `ERR ${res.status}`;
+    }
+  } catch(e) {
+    txt.textContent = 'UNREACHABLE';
+    showError(`Cannot reach ${url}. Make sure your Render service is running.`);
+  }
+}
+
+function getApiUrl() {
+  return document.getElementById('apiUrl').value.trim().replace(/\/$/, '');
+}
+
+// ── analyze ──
+async function analyze() {
+  if (!selectedFile) return;
+  const url = getApiUrl();
+  if (!url) { showError('Set your backend API URL above first.'); return; }
+
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>ANALYZING…';
+  clearError();
+  startScanAnimation();
+
+  const formData = new FormData();
+  formData.append('file', selectedFile);
+
+  try {
+    const res = await fetch(`${url}/detect`, {
+      method: 'POST',
+      body: formData,
+      signal: AbortSignal.timeout(60000),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`API ${res.status}: ${err}`);
+    }
+    const data = await res.json();
+    renderResults(data);
+  } catch(e) {
+    showError(`${e.message}\n\nMake sure:\n• Your Render backend is running\n• The API URL is correct\n• Your model files are present on the server`);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'ANALYZE FRUIT';
+    stopScanAnimation();
+  }
+}
+
+// ── render results ──
+function renderResults(data) {
+  // annotated image
+  if (data.annotated_image) {
+    const img = document.getElementById('resultImg');
+    img.src = `data:image/jpeg;base64,${data.annotated_image}`;
+    img.style.display = 'block';
+    document.getElementById('resultPlaceholder').style.display = 'none';
+  }
+
+  // summary pills
+  const row = document.getElementById('summaryRow');
+  row.innerHTML = '';
+  if (data.summary) {
+    const labels = { fresh: '🟢 Fresh', rotten: '🔴 Rotten', adulterated: '🟡 Adulterated' };
+    const pilltypes = { fresh: 'fresh', rotten: 'rotten', adulterated: 'adult' };
+    for (const [k, v] of Object.entries(data.summary)) {
+      const p = document.createElement('span');
+      p.className = `pill ${pilltypes[k]}`;
+      p.textContent = `${labels[k]}: ${v}`;
+      row.appendChild(p);
+    }
+    if (data.mode) {
+      const p = document.createElement('span');
+      p.className = 'pill mode';
+      p.textContent = `mode: ${data.mode}`;
+      row.appendChild(p);
+    }
+  }
+  document.getElementById('modeTag', ).textContent = data.mode ? `preprocess: ${data.mode}` : '';
+
+  // detection cards
+  const section = document.getElementById('detectionSection');
+  const list = document.getElementById('detList');
+  const countEl = document.getElementById('detCount');
+  list.innerHTML = '';
+
+  if (!data.detections || data.detections.length === 0) {
+    section.style.display = 'block';
+    list.innerHTML = '<div class="empty-state">No objects detected in this image.</div>';
+    countEl.textContent = '0 objects';
+    return;
+  }
+
+  section.style.display = 'block';
+  countEl.textContent = `${data.detections.length} object${data.detections.length !== 1 ? 's' : ''}`;
+
+  const colorMap = { fresh: 'var(--fresh)', rotten: 'var(--rotten)', adulterated: 'var(--adult)' };
+
+  data.detections.forEach((det, i) => {
+    const cls = det.class;
+    const conf = det.class_conf;
+    const color = colorMap[cls] || 'var(--muted)';
+
+    const card = document.createElement('div');
+    card.className = `det-card ${cls}`;
+    card.innerHTML = `
+      <div class="det-card-top">
+        <span class="det-card-label ${cls}">${cls.toUpperCase()} — Object ${i+1}</span>
+        <span class="det-yolo-tag">YOLO: ${det.yolo_class} ${Math.round(det.yolo_conf*100)}%</span>
+      </div>
+      <div class="conf-bar-wrap">
+        <div class="conf-bar-bg">
+          <div class="conf-bar-fill" style="width:${conf*100}%;background:${color}"></div>
+        </div>
+        <span class="conf-val">${Math.round(conf*100)}%</span>
+      </div>
+      <div class="prob-row">
+        ${Object.entries(det.probabilities || {}).map(([k,v]) =>
+          `<span class="prob-chip ${k === cls ? 'winner' : ''}">${k}: ${(v*100).toFixed(1)}%</span>`
+        ).join('')}
+      </div>
+    `;
+    list.appendChild(card);
+  });
+}
+
+// ── helpers ──
+function clearResults() {
+  document.getElementById('resultImg').style.display = 'none';
+  document.getElementById('resultPlaceholder').style.display = 'flex';
+  document.getElementById('summaryRow').innerHTML = '';
+  document.getElementById('detectionSection').style.display = 'none';
+  document.getElementById('modeTag').textContent = '—';
+  clearError();
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorBanner');
+  el.textContent = msg;
+  el.classList.add('show');
+}
+function clearError() {
+  document.getElementById('errorBanner').classList.remove('show');
+}
+
+function startScanAnimation() {
+  document.getElementById('resultImgWrap').classList.add('scanning');
+}
+function stopScanAnimation() {
+  document.getElementById('resultImgWrap').classList.remove('scanning');
+}
+
+// ── on load: check for saved URL ──
+window.addEventListener('DOMContentLoaded', () => {
+  const saved = localStorage.getItem('fruitscan_api_url');
+  if (saved) document.getElementById('apiUrl').value = saved;
+
+  document.getElementById('apiUrl').addEventListener('change', (e) => {
+    localStorage.setItem('fruitscan_api_url', e.target.value.trim());
+  });
+});
+</script>
+</body>
+</html>
